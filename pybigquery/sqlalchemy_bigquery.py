@@ -11,7 +11,7 @@ from google.cloud.bigquery.table import EncryptionConfiguration
 from google.cloud.bigquery.dataset import DatasetReference
 from google.oauth2 import service_account
 from google.api_core.exceptions import NotFound
-from sqlalchemy.exc import NoSuchTableError
+from sqlalchemy.exc import NoSuchTableError, SQLAlchemyError
 from sqlalchemy import types, util
 from sqlalchemy.sql.compiler import SQLCompiler, GenericTypeCompiler, DDLCompiler, IdentifierPreparer
 from sqlalchemy.engine.default import DefaultDialect, DefaultExecutionContext
@@ -23,6 +23,7 @@ import re
 from .parse_url import parse_url
 
 FIELD_ILLEGAL_CHARACTERS = re.compile(r'[^\w]+')
+BIGQUERY_TABLE_NAME_FORMAT = re.compile(r'[\w]{1,1024}')
 
 
 class UniversalSet(object):
@@ -117,6 +118,18 @@ TIME = _type_map['TIME']
 RECORD = _type_map['RECORD']
 NUMERIC = _type_map['NUMERIC']
 
+class InvalidTableName(SQLAlchemyError):
+    """Raised when a table name is not valid"""
+
+def validate_bigquery_table_name(table_name):
+    """
+    Validate that table_name is a valid BigQuery table name,
+    raise InvalidTableName if it is not
+    """
+    if BIGQUERY_TABLE_NAME_FORMAT.fullmatch(table_name) is None:
+        raise InvalidTableName(
+            'Invalid table name "{}". See https://cloud.google.com/bigquery/docs/tables#table_naming'.format(table_name,)
+        )
 
 class BigQueryExecutionContext(DefaultExecutionContext):
     def create_cursor(self):
@@ -231,6 +244,11 @@ class BigQueryDDLCompiler(DDLCompiler):
         if column.doc is not None:
             colspec = '{} OPTIONS(description={})'.format(colspec, self.preparer.quote(column.doc))
         return colspec
+
+    # Validate table names before creating them.
+    def visit_create_table(self, create):
+        validate_bigquery_table_name(create.element.name)
+        return super(BigQueryDDLCompiler, self).visit_create_table(create)
 
     def post_create_table(self, table):
         bq_opts = table.dialect_options['bigquery']
@@ -367,10 +385,12 @@ class BigQueryDialect(DefaultDialect):
         return (project, dataset, table_name)
 
     def _get_table(self, connection, table_name, schema=None):
+        project, dataset, table_name_prepared = self._split_table_name(table_name)
+        validate_bigquery_table_name(table_name_prepared)
+
         if isinstance(connection, Engine):
             connection = connection.connect()
 
-        project, dataset, table_name_prepared = self._split_table_name(table_name)
         if dataset is None:
             if schema is not None:
                 dataset = schema
