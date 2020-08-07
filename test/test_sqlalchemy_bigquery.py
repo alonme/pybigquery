@@ -3,6 +3,7 @@ from __future__ import unicode_literals
 
 from google.api_core.exceptions import BadRequest
 from pybigquery.api import ApiClient
+from pybigquery.sqlalchemy_bigquery import InvalidTableName
 from sqlalchemy.engine import create_engine
 from sqlalchemy.schema import Table, MetaData, Column
 from sqlalchemy.ext.declarative import declarative_base
@@ -394,7 +395,7 @@ def test_dml(engine, session, table_dml):
 def test_create_table(engine):
     meta = MetaData()
     table = Table(
-        'test_pybigquery.test_table_create', meta,
+        'test_pybigquery.Test_table_create', meta,
         Column('integer_c', sqlalchemy.Integer, doc="column description"),
         Column('float_c', sqlalchemy.Float),
         Column('decimal_c', sqlalchemy.DECIMAL),
@@ -416,12 +417,35 @@ def test_create_table(engine):
     Base = declarative_base()
 
     class TableTest(Base):
-        __tablename__ = 'test_pybigquery.test_table_create2'
+        __tablename__ = 'test_pybigquery.Test_table_create2'
         integer_c = Column(sqlalchemy.Integer, primary_key=True)
         float_c = Column(sqlalchemy.Float)
 
     Base.metadata.create_all(engine)
     Base.metadata.drop_all(engine)
+
+
+@pytest.mark.parametrize('inavlid_table_name', ['a' * 1025,
+                                                'name_with-dash',
+                                                'punctuation&',
+                                                's p a c e'])
+def test_create_table_invalid_name(engine_using_test_dataset, inavlid_table_name):
+    meta = MetaData()
+    table = Table(inavlid_table_name, meta, Column('integer_c', sqlalchemy.Integer))
+    with pytest.raises(InvalidTableName):
+        meta.create_all(engine_using_test_dataset)
+
+    # Test creating tables with declarative_base
+    Base = declarative_base()
+
+    class TableTest(Base):
+        __tablename__ = inavlid_table_name
+        integer_c = Column(sqlalchemy.Integer, primary_key=True)
+        float_c = Column(sqlalchemy.Float)
+
+    with pytest.raises(InvalidTableName):
+        Base.metadata.create_all(engine_using_test_dataset)
+
 
 def test_schemas_names(inspector, inspector_using_test_dataset):
     datasets = inspector.get_schema_names()
